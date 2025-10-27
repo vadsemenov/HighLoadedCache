@@ -11,9 +11,14 @@ try
     {
         "SET key1 value1",
         "GET key1",
-        "DELETE key1",
+        "DEL key1",
         "PING"
     };
+
+    var buffer = new byte[1024];
+    var byteCount = await stream.ReadAsync(buffer);
+    var response = Encoding.UTF8.GetString(buffer, 0, byteCount);
+    Console.WriteLine($"Получено: {response}");
 
     while (Console.ReadKey().Key != ConsoleKey.Escape)
     {
@@ -22,6 +27,12 @@ try
             var data = Encoding.UTF8.GetBytes(command);
             await stream.WriteAsync(data);
             Console.WriteLine($"Отправлено: {command}");
+
+            // ИСПРАВЬ!
+
+            byteCount = await stream.ReadAsync(buffer);
+            response = Encoding.UTF8.GetString(buffer, 0, byteCount);
+            Console.WriteLine($"Получено: {response}");
 
             Console.ReadKey();
         }

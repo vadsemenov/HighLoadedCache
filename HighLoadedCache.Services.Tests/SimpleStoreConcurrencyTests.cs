@@ -1,5 +1,4 @@
-﻿using HighLoadedCache.Services;
-using HighLoadedCache.Services.Store;
+﻿using HighLoadedCache.Services.Store;
 
 namespace HighLoadedCache.App.Tests;
 
@@ -19,7 +18,7 @@ public class SimpleStoreConcurrencyTests
         // Инициализация ключей
         var keys = Enumerable.Range(0, keyCount).Select(i => $"key-{i}").ToArray();
         foreach (var k in keys)
-            store.Set(k, BitConverter.GetBytes(0));
+            store.Set(k, 0.ToString().AsSpan());
 
         var rnd = new ThreadLocal<Random>(() => new Random(Guid.NewGuid().GetHashCode()));
 
@@ -29,7 +28,7 @@ public class SimpleStoreConcurrencyTests
             for (int i = 0; i < writesPerWriter; i++)
             {
                 var k = keys[rnd.Value!.Next(keys.Length)];
-                store.Set(k, BitConverter.GetBytes(i));
+                store.Set(k, i.ToString().AsSpan());
             }
         })).ToArray();
 
@@ -39,7 +38,7 @@ public class SimpleStoreConcurrencyTests
             for (int i = 0; i < readsPerReader; i++)
             {
                 var k = keys[rnd.Value!.Next(keys.Length)];
-                var val = store.Get(k);
+                var val = store.Get(k.AsSpan());
                 Assert.NotNull(val);
             }
         })).ToArray();

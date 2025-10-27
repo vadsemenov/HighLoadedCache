@@ -1,4 +1,5 @@
-﻿using HighLoadedCache.Services.Abstraction;
+﻿using System.Text;
+using HighLoadedCache.Services.Abstraction;
 
 namespace HighLoadedCache.Services.Store;
 
@@ -10,14 +11,14 @@ public class SimpleStore : ISimpleStore, IDisposable
     private long _getCount;
     private long _deleteCount;
 
-    public void Set(string key, byte[] value)
+    public void Set(ReadOnlySpan<char> key, ReadOnlySpan<char> value)
     {
         Interlocked.Increment(ref _setCount);
 
         _lock.EnterWriteLock();
         try
         {
-            _store[key] = value;
+            _store[key.ToString()] = Encoding.UTF8.GetBytes(value.ToArray());
         }
         finally
         {
@@ -25,15 +26,14 @@ public class SimpleStore : ISimpleStore, IDisposable
         }
     }
 
-    public byte[]? Get(string key)
+    public byte[]? Get(ReadOnlySpan<char> key)
     {
         Interlocked.Increment(ref _getCount);
 
         _lock.EnterReadLock();
         try
         {
-            var value = _store.GetValueOrDefault(key);
-            return value;
+            return _store.GetValueOrDefault(key.ToString());
         }
         finally
         {
@@ -41,14 +41,14 @@ public class SimpleStore : ISimpleStore, IDisposable
         }
     }
 
-    public void Delete(string key)
+    public void Delete(ReadOnlySpan<char> key)
     {
         Interlocked.Increment(ref _deleteCount);
 
         _lock.EnterWriteLock();
         try
         {
-            _store.Remove(key);
+            _store.Remove(key.ToString());
         }
         finally
         {

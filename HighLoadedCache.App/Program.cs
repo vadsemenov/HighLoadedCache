@@ -8,7 +8,6 @@ var builder = Host.CreateApplicationBuilder(args);
 
 builder.Services.AddSingleton<ISimpleStore, SimpleStore>();
 builder.Services.AddSingleton<ITcpServer, TcpServer>();
-builder.Services.AddScoped<IClientHandler, ClientHandler>();
 
 var host = builder.Build();
 
@@ -20,7 +19,7 @@ await host.WaitForShutdownAsync();
 
 async Task RunTcpServerAsync(IHost hostProvider)
 {
-    await using var server = hostProvider.Services.GetService<ITcpServer>();
+    using var server = hostProvider.Services.GetService<ITcpServer>();
 
     try
     {

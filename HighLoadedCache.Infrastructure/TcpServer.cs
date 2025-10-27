@@ -1,25 +1,27 @@
-﻿using System.Collections.Concurrent;
+﻿using System.Buffers;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using HighLoadedCache.Services.Abstraction;
-using Microsoft.Extensions.DependencyInjection;
+using HighLoadedCache.Services.Utils;
 
 namespace HighLoadedCache.Infrastructure;
 
 public class TcpServer : ITcpServer
 {
-    private readonly IServiceScopeFactory _serviceScopeFactory;
+    private readonly ISimpleStore _simpleStore;
+
     private Socket? _socket;
-    private readonly ConcurrentBag<ClientHandler> _connectedClients = new();
+
     private const string IpAddress = "127.0.0.1";
     private const int Port = 8081;
 
-    public TcpServer(IServiceScopeFactory serviceScopeFactory)
+    public TcpServer(ISimpleStore simpleStore)
     {
-        _serviceScopeFactory = serviceScopeFactory;
+        _simpleStore = simpleStore;
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    public Task StartAsync(CancellationToken cancellationToken)
     {
         try
         {
@@ -33,40 +35,31 @@ public class TcpServer : ITcpServer
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                try
+                _ = Task.Run(async () =>
                 {
-                    var clientSocket = await _socket.AcceptAsync(cancellationToken);
+                    Socket? clientSocket = null;
 
-                    using var scope = _serviceScopeFactory.CreateScope();
-                    var clientHandler = ActivatorUtilities.CreateInstance<ClientHandler>(scope.ServiceProvider, clientSocket);
-
-                    _connectedClients.Add(clientHandler);
-
-                    Console.WriteLine(
-                        $"Создано новое подключение с клиентом. Всего подключений: {_connectedClients.Count}");
-
-                    _ = Task.Run(async () =>
+                    try
                     {
-                        try
-                        {
-                            await clientHandler.ProcessAsync(cancellationToken);
-                        }
-                        finally
-                        {
-                            _connectedClients.TryTake(out clientHandler);
+                        clientSocket = await _socket.AcceptAsync(cancellationToken);
+                        Console.WriteLine("Создано новое подключение с клиентом.");
 
-                            Console.WriteLine($"Клиент отключен. Всего подключений: {_connectedClients.Count}");
-                        }
-                    }, cancellationToken);
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    break;
-                }
-                catch (Exception exception)
-                {
-                    Console.WriteLine($"Ошибка при принятии подключения: {exception}");
-                }
+                        await ProcessAsync(clientSocket, cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        Console.WriteLine("Подключение отменено.");
+                    }
+                    catch (Exception exception)
+                    {
+                        Console.WriteLine($"Ошибка при принятии подключения: {exception}");
+                    }
+                    finally
+                    {
+                        clientSocket?.Dispose();
+                        Console.WriteLine("Клиент отключен.");
+                    }
+                }, cancellationToken);
             }
         }
         catch (Exception exception)
@@ -74,20 +67,190 @@ public class TcpServer : ITcpServer
             Console.WriteLine(exception);
             throw;
         }
+
+        return Task.CompletedTask;
     }
 
-    private async Task DisconnectAllClientsAsync()
+    private async Task ProcessAsync(Socket clientSocket, CancellationToken cancellationToken)
     {
-        var disconnectTasks = _connectedClients.Select(client => client.DisconnectAsync());
-        await Task.WhenAll(disconnectTasks);
+        try
+        {
+            var welcomeMessage = "Подключение к серверу установлено\n";
+            var welcomeBytes = Encoding.UTF8.GetBytes(welcomeMessage);
+            await clientSocket.SendAsync(welcomeBytes, SocketFlags.None);
 
-        _connectedClients.Clear();
+            await ReceiveDataAsync(clientSocket, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Ошибка обработки клиента: {ex.Message}");
+        }
     }
 
-    public async ValueTask DisposeAsync()
+    private async Task ReceiveDataAsync(Socket clientSocket, CancellationToken cancellationToken)
     {
-        await DisconnectAllClientsAsync();
+        var buffer = ArrayPool<byte>.Shared.Rent(200);
 
+        try
+        {
+            while (clientSocket.Connected)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return;
+                }
+
+                var byteCount = await clientSocket.ReceiveAsync(buffer, SocketFlags.None);
+
+                if (byteCount == 0)
+                {
+                    break;
+                }
+
+                var receivedText = Encoding.UTF8.GetString(buffer, 0, byteCount);
+
+                PrintCommandsToConsole(CommandParser.Parse(receivedText.AsSpan()));
+
+                var commandParts = CommandParser.Parse(receivedText.AsSpan());
+
+                var response = "OK\r\n";
+
+                switch (commandParts.Command)
+                {
+                    case "SET":
+                        _simpleStore.Set(commandParts.Key, commandParts.Value);
+                        break;
+                    case "GET":
+                        var bytes = TryGetStoreValue(commandParts.Key);
+                        response = bytes != null ? Encoding.UTF8.GetString(bytes) : "(nil)\r\n";
+                        break;
+                    case "DEL":
+                        _simpleStore.Delete(commandParts.Key);
+                        break;
+                    case "STA":
+                        var statistics = _simpleStore.GetStatistics();
+                        response = $"Statistics, set count: {statistics.setCount}, get count: {statistics.getCount}, delete count: {statistics.deleteCount}\r\n";
+                        break;
+                    default:
+                        response = "ERROR\r\n";
+                        break;
+                }
+
+                await clientSocket.SendAsync(Encoding.UTF8.GetBytes(response), SocketFlags.None);
+            }
+        }
+        catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
+        {
+            Console.WriteLine("Клиент разорвал соединение");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Ошибка при получении данных: {ex.Message}");
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private byte[]? TryGetStoreValue(ReadOnlySpan<char> commandPartsKey)
+    {
+        return _simpleStore.Get(commandPartsKey);
+    }
+
+    private void PrintCommandsToConsole(CommandParts commands)
+    {
+        Console.WriteLine($"Команда {commands.Command}, ключ {commands.Key}, значение {commands.Value}");
+    }
+
+    public void Dispose()
+    {
         _socket?.Dispose();
     }
 }
+
+// public class ClientHandler(Socket clientSocket, ISimpleStore simpleStore)
+// {
+//     public async Task ProcessAsync(CancellationToken cancellationToken)
+//     {
+//         try
+//         {
+//             var welcomeMessage = "Подключение к серверу установлено\n";
+//             var welcomeBytes = Encoding.UTF8.GetBytes(welcomeMessage);
+//             await clientSocket.SendAsync(welcomeBytes, SocketFlags.None);
+//
+//             await ReceiveDataAsync(cancellationToken);
+//         }
+//         catch (Exception ex)
+//         {
+//             Console.WriteLine($"Ошибка обработки клиента: {ex.Message}");
+//         }
+//     }
+//
+//     private async Task ReceiveDataAsync(CancellationToken cancellationToken)
+//     {
+//         var buffer = ArrayPool<byte>.Shared.Rent(200);
+//
+//         try
+//         {
+//             while (clientSocket.Connected)
+//             {
+//                 if (cancellationToken.IsCancellationRequested)
+//                 {
+//                     return;
+//                 }
+//
+//                 var byteCount = await clientSocket.ReceiveAsync(buffer, SocketFlags.None);
+//
+//                 if (byteCount == 0)
+//                 {
+//                     break;
+//                 }
+//
+//                 var receivedText = Encoding.UTF8.GetString(buffer, 0, byteCount);
+//
+//                 PrintCommandsToConsole(CommandParser.Parse(receivedText.AsSpan()));
+//             }
+//         }
+//         catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
+//         {
+//             Console.WriteLine("Клиент разорвал соединение");
+//         }
+//         catch (Exception ex)
+//         {
+//             Console.WriteLine($"Ошибка при получении данных: {ex.Message}");
+//         }
+//         finally
+//         {
+//             ArrayPool<byte>.Shared.Return(buffer);
+//         }
+//     }
+//
+//     private void PrintCommandsToConsole(CommandParts commands)
+//     {
+//         Console.WriteLine(
+//             $"[Клиент {clientSocket.RemoteEndPoint}] Команда {commands.Command}, ключ {commands.Key}, значение {commands.Value}");
+//     }
+//
+//     public Task DisconnectAsync()
+//     {
+//         try
+//         {
+//             if (clientSocket.Connected)
+//             {
+//                 clientSocket.Shutdown(SocketShutdown.Both);
+//             }
+//         }
+//         catch (Exception ex)
+//         {
+//             Console.WriteLine($"Ошибка при отключении клиента: {ex.Message}");
+//         }
+//         finally
+//         {
+//             clientSocket.Close();
+//             clientSocket.Dispose();
+//         }
+//
+//         return Task.CompletedTask;
+//     }
+// }
