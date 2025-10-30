@@ -13,6 +13,8 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HighLoadedCache.Services", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HighLoadedCache.Infrastructure", "HighLoadedCache.Infrastructure\HighLoadedCache.Infrastructure.csproj", "{118E4FA2-B493-40DE-9FCF-B4F1FE988598}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "HighLoadedCache.Domain", "HighLoadedCache.Domain\HighLoadedCache.Domain.csproj", "{ECF9EE79-8FE4-49AD-BE4A-42327DFDD834}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -39,6 +41,10 @@ Global
 		{118E4FA2-B493-40DE-9FCF-B4F1FE988598}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{118E4FA2-B493-40DE-9FCF-B4F1FE988598}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{118E4FA2-B493-40DE-9FCF-B4F1FE988598}.Release|Any CPU.Build.0 = Release|Any CPU
+		{ECF9EE79-8FE4-49AD-BE4A-42327DFDD834}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{ECF9EE79-8FE4-49AD-BE4A-42327DFDD834}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{ECF9EE79-8FE4-49AD-BE4A-42327DFDD834}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{ECF9EE79-8FE4-49AD-BE4A-42327DFDD834}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

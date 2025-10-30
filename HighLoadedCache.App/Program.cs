@@ -1,10 +1,20 @@
-﻿using HighLoadedCache.Infrastructure;
+﻿using HighLoadedCache.App;
+using HighLoadedCache.Infrastructure;
 using HighLoadedCache.Services.Abstraction;
 using HighLoadedCache.Services.Store;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 
 var builder = Host.CreateApplicationBuilder(args);
+
+IConfiguration configuration = new ConfigurationBuilder()
+    .SetBasePath(Directory.GetCurrentDirectory())
+    .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
+    .Build();
+
+// Настройка DI-контейнера
+builder.Services.AddOptions<TcpSettings>().Bind(configuration.GetSection("TcpSettings"));
 
 builder.Services.AddSingleton<ISimpleStore, SimpleStore>();
 builder.Services.AddSingleton<ITcpServer, TcpServer>();

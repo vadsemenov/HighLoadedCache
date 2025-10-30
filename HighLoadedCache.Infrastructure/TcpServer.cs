@@ -2,31 +2,27 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
+using HighLoadedCache.App;
 using HighLoadedCache.Services.Abstraction;
 using HighLoadedCache.Services.Utils;
+using Microsoft.Extensions.Options;
 
 namespace HighLoadedCache.Infrastructure;
 
-public class TcpServer : ITcpServer
+public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettings)
+    : ITcpServer
 {
-    private readonly ISimpleStore _simpleStore;
-
     private Socket? _socket;
 
-    private const string IpAddress = "127.0.0.1";
-    private const int Port = 8081;
-
-    public TcpServer(ISimpleStore simpleStore)
-    {
-        _simpleStore = simpleStore;
-    }
+    private readonly string _ipAddress = tcpSettings.Value.IpAddress;
+    private readonly int _port = tcpSettings.Value.Port;
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
         try
         {
             _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
-            var localEndpoint = new IPEndPoint(IPAddress.Parse(IpAddress), Port);
+            var localEndpoint = new IPEndPoint(IPAddress.Parse(_ipAddress), _port);
 
             _socket.Bind(localEndpoint);
             _socket.Listen(100);
@@ -37,11 +33,9 @@ public class TcpServer : ITcpServer
             {
                 _ = Task.Run(async () =>
                 {
-                    Socket? clientSocket = null;
-
                     try
                     {
-                        clientSocket = await _socket.AcceptAsync(cancellationToken);
+                        using Socket? clientSocket = await _socket.AcceptAsync(cancellationToken);
                         Console.WriteLine("Создано новое подключение с клиентом.");
 
                         await ProcessAsync(clientSocket, cancellationToken);
@@ -56,7 +50,6 @@ public class TcpServer : ITcpServer
                     }
                     finally
                     {
-                        clientSocket?.Dispose();
                         Console.WriteLine("Клиент отключен.");
                     }
                 }, cancellationToken);
@@ -118,17 +111,17 @@ public class TcpServer : ITcpServer
                 switch (commandParts.Command)
                 {
                     case "SET":
-                        _simpleStore.Set(commandParts.Key, commandParts.Value);
+                        simpleStore.Set(commandParts.Key, commandParts.Value);
                         break;
                     case "GET":
                         var bytes = TryGetStoreValue(commandParts.Key);
                         response = bytes != null ? Encoding.UTF8.GetString(bytes) : "(nil)\r\n";
                         break;
                     case "DEL":
-                        _simpleStore.Delete(commandParts.Key);
+                        simpleStore.Delete(commandParts.Key);
                         break;
                     case "STA":
-                        var statistics = _simpleStore.GetStatistics();
+                        var statistics = simpleStore.GetStatistics();
                         response = $"Statistics, set count: {statistics.setCount}, get count: {statistics.getCount}, delete count: {statistics.deleteCount}\r\n";
                         break;
                     default:
@@ -155,7 +148,7 @@ public class TcpServer : ITcpServer
 
     private byte[]? TryGetStoreValue(ReadOnlySpan<char> commandPartsKey)
     {
-        return _simpleStore.Get(commandPartsKey);
+        return simpleStore.Get(commandPartsKey);
     }
 
     private void PrintCommandsToConsole(CommandParts commands)
