@@ -2,7 +2,10 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using HighLoadedCache.App;
+using System.Text.Json;
+using System.Text.Json.Serialization;
+using HighLoadedCache.Domain;
+using HighLoadedCache.Domain.Dto;
 using HighLoadedCache.Services.Abstraction;
 using HighLoadedCache.Services.Utils;
 using Microsoft.Extensions.Options;
@@ -35,7 +38,7 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
                 {
                     try
                     {
-                        using Socket? clientSocket = await _socket.AcceptAsync(cancellationToken);
+                        using Socket clientSocket = await _socket.AcceptAsync(cancellationToken);
                         Console.WriteLine("Создано новое подключение с клиентом.");
 
                         await ProcessAsync(clientSocket, cancellationToken);
@@ -111,11 +114,11 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
                 switch (commandParts.Command)
                 {
                     case "SET":
-                        simpleStore.Set(commandParts.Key, commandParts.Value);
+                        simpleStore.Set(commandParts.Key.ToString(), JsonSerializer.Deserialize<UserProfile>(commandParts.Value)!);
                         break;
                     case "GET":
-                        var bytes = TryGetStoreValue(commandParts.Key);
-                        response = bytes != null ? Encoding.UTF8.GetString(bytes) : "(nil)\r\n";
+                        var userProfile = TryGetStoreValue(commandParts.Key.ToString());
+                        response = userProfile != null ? JsonSerializer.Serialize(userProfile) : "(nil)\r\n";
                         break;
                     case "DEL":
                         simpleStore.Delete(commandParts.Key);
@@ -146,7 +149,7 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
         }
     }
 
-    private byte[]? TryGetStoreValue(ReadOnlySpan<char> commandPartsKey)
+    private UserProfile? TryGetStoreValue(string commandPartsKey)
     {
         return simpleStore.Get(commandPartsKey);
     }

@@ -1,4 +1,4 @@
-﻿using HighLoadedCache.App;
+﻿using HighLoadedCache.Domain;
 using HighLoadedCache.Infrastructure;
 using HighLoadedCache.Services.Abstraction;
 using HighLoadedCache.Services.Store;

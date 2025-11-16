@@ -18,7 +18,7 @@ public class SimpleStoreConcurrencyTests
         // Инициализация ключей
         var keys = Enumerable.Range(0, keyCount).Select(i => $"key-{i}").ToArray();
         foreach (var k in keys)
-            store.Set(k, 0.ToString().AsSpan());
+            store.Set(k, new() { Id = 0, Username = "User", CreatedAt = DateTime.Now });
 
         var rnd = new ThreadLocal<Random>(() => new Random(Guid.NewGuid().GetHashCode()));
 
@@ -28,7 +28,7 @@ public class SimpleStoreConcurrencyTests
             for (int i = 0; i < writesPerWriter; i++)
             {
                 var k = keys[rnd.Value!.Next(keys.Length)];
-                store.Set(k, i.ToString().AsSpan());
+                store.Set(k, new() { Id = 0, Username = "User", CreatedAt = DateTime.Now });
             }
         })).ToArray();
 
@@ -38,7 +38,7 @@ public class SimpleStoreConcurrencyTests
             for (int i = 0; i < readsPerReader; i++)
             {
                 var k = keys[rnd.Value!.Next(keys.Length)];
-                var val = store.Get(k.AsSpan());
+                var val = store.Get(k);
                 Assert.NotNull(val);
             }
         })).ToArray();

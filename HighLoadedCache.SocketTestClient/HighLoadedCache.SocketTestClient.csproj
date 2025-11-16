@@ -13,4 +13,8 @@
     <PackageReference Include="NBomber.Http" Version="6.1.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\HighLoadedCache.Domain\HighLoadedCache.Domain.csproj" />
+  </ItemGroup>
+
 </Project>
