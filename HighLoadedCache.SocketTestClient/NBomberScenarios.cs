@@ -3,11 +3,9 @@ using System.Text;
 using NBomber.Contracts;
 using NBomber.CSharp;
 
-// пространство имён, где лежит Steps.CreateSetStep
-
 namespace HighLoadedCache.SocketTestClient;
 
-public static class Scenarios
+public static class NBomberScenarios
 {
     private static readonly RandomNumberGenerator NumberGenerator = RandomNumberGenerator.Create();
     private static string RandomKey(int len) => RandomFromAlphabet(len, "abcdefghijklmnopqrstuvwxyz0123456789");
@@ -36,19 +34,19 @@ public static class Scenarios
                             scenarioContext.Logger.Error(exception, "tcp_set_random failed");
                             return Response.Fail();
                         }
-                       
+
                         return Response.Ok();
                     });
-                    
+
                     return step;
                 }
                 catch (Exception exception)
                 {
-                    scenarioContext.Logger.Error(exception, "tcp_set_random failed");
+                    scenarioContext.Logger.Error(exception, "tcp_set failed");
                     return Response.Fail();
                 }
             })
-            .WithWarmUpDuration(TimeSpan.FromSeconds(10)) // разогрев 5–10 сек
+            .WithWarmUpDuration(TimeSpan.FromSeconds(5)) // разогрев 5–10 сек
             .WithLoadSimulations(
                 Simulation.Inject(
                     rate: 100, // 100 запросов/сек

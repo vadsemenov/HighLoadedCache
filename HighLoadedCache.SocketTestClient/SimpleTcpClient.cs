@@ -4,75 +4,76 @@ using System.Text;
 
 namespace HighLoadedCache.SocketTestClient;
 
-public class SimpleTcpClient : IAsyncDisposable
+public class SimpleTcpClient(string? host = null, int? port = null) : IAsyncDisposable
 {
-    private readonly TcpClient _client;
-    private readonly string _host;
-    private readonly int _port;
-    private NetworkStream _stream;
+    private readonly TcpClient _client = new();
+    private readonly string _host = host ?? "127.0.0.1";
+    private readonly int _port = port ?? 8081;
+    private NetworkStream? _stream;
 
 
-    public SimpleTcpClient(string? host = null, int? port = null)
-    { 
-        _client = new TcpClient();
-        _host = host ?? "127.0.0.1";
-        _port = port ?? 8081;
-    }
-    
     public async Task ConnectAsync()
     {
         await _client.ConnectAsync(_host, _port);
-        
+
         _stream = _client.GetStream();
     }
 
     public async Task SetAsync(string key, string value)
     {
-        var arrayPool = ArrayPool<byte>.Shared.Rent(1024);
-        
+        var arrayPool = ArrayPool<byte>.Shared;
+        var rented = arrayPool.Rent(Encoding.UTF8.GetMaxByteCount(4 + key.Length + 1 + value.Length));
+
         try
         {
-            arrayPool = Encoding.UTF8.GetBytes(string.Concat("SET ", key, " ", value));
-            await _stream.WriteAsync(arrayPool, 0, arrayPool.Length);
+            var text = string.Concat("SET ", key, " ", value);
+            var count = Encoding.UTF8.GetBytes(text.AsSpan(), rented);
+
+            if (_stream == null)
+                throw new InvalidOperationException("Stream is not initialized");
+
+            await _stream.WriteAsync(rented.AsMemory(0, count)).ConfigureAwait(false);
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(arrayPool);
+            arrayPool.Return(rented, clearArray: false);
         }
     }
 
     public async Task<string> GetAsync(string key)
     {
-        var arrayPool = ArrayPool<byte>.Shared.Rent(1024);
-        var responseBuffer = ArrayPool<byte>.Shared.Rent(1024);
-        
-        string? response = null;
-        
+        var arrayPool = ArrayPool<byte>.Shared;
+
+        var command = string.Concat("GET ", key);
+        var maxCmdBytes = Encoding.UTF8.GetMaxByteCount(command.Length);
+
+        var cmdBuffer = arrayPool.Rent(maxCmdBytes);
+        var responseBuffer = arrayPool.Rent(1024);
+
         try
         {
-            arrayPool = Encoding.UTF8.GetBytes(string.Concat("GET ", key));
-            await _stream.WriteAsync(arrayPool, 0, arrayPool.Length);
-            
-            var byteCount = await _stream.ReadAsync(responseBuffer);
-            response = Encoding.UTF8.GetString(responseBuffer, 0, byteCount);
+            var cmdLen = Encoding.UTF8.GetBytes(command.AsSpan(), cmdBuffer);
+
+            if (_stream == null)
+                throw new InvalidOperationException("Stream is not initialized");
+
+            await _stream.WriteAsync(cmdBuffer.AsMemory(0, cmdLen)).ConfigureAwait(false);
+
+            var byteCount = await _stream.ReadAsync(responseBuffer).ConfigureAwait(false);
+            return Encoding.UTF8.GetString(responseBuffer, 0, byteCount);
         }
         finally
         {
-            ArrayPool<byte>.Shared.Return(arrayPool);
-            ArrayPool<byte>.Shared.Return(responseBuffer);
+            arrayPool.Return(cmdBuffer);
+            arrayPool.Return(responseBuffer);
         }
-        
-        return response;
-    }
-
-    public void Dispose()
-    {
-        _client.Dispose();
     }
 
     public async ValueTask DisposeAsync()
     {
-        await _stream.DisposeAsync();
+        if (_stream != null)
+            await _stream.DisposeAsync();
+
         _client.Dispose();
     }
 }
