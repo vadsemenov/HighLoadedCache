@@ -1,5 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
+using HighLoadedCache.Domain.Dto;
 using NBomber.Contracts;
 using NBomber.CSharp;
 
@@ -25,7 +27,7 @@ public static class NBomberScenarios
                             await client.ConnectAsync();
 
                             var key = $"k_{scenarioContext.ScenarioInfo.InstanceId}_{scenarioContext.InvocationNumber}_{RandomKey(8)}";
-                            var value = RandomString(32);
+                            var value = JsonSerializer.Serialize(new UserProfile { Id = 0, Username = "User", CreatedAt = DateTime.Now });
 
                             await client.SetAsync(key, value);
                         }

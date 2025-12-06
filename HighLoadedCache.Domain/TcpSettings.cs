@@ -1,4 +1,4 @@
-namespace HighLoadedCache.App;
+namespace HighLoadedCache.Domain;
 
 public class TcpSettings
 {

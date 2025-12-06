@@ -1,4 +1,5 @@
-﻿using System.Text;
+﻿using System.Text.Json;
+using HighLoadedCache.Domain.Dto;
 using HighLoadedCache.Services.Abstraction;
 
 namespace HighLoadedCache.Services.Store;
@@ -11,14 +12,14 @@ public class SimpleStore : ISimpleStore, IDisposable
     private long _getCount;
     private long _deleteCount;
 
-    public void Set(ReadOnlySpan<char> key, ReadOnlySpan<char> value)
+    public void Set(string key, UserProfile userProfile)
     {
         Interlocked.Increment(ref _setCount);
 
         _lock.EnterWriteLock();
         try
         {
-            _store[key.ToString()] = Encoding.UTF8.GetBytes(value.ToArray());
+            _store[key] = JsonSerializer.SerializeToUtf8Bytes(userProfile);
         }
         finally
         {
@@ -26,14 +27,18 @@ public class SimpleStore : ISimpleStore, IDisposable
         }
     }
 
-    public byte[]? Get(ReadOnlySpan<char> key)
+    public UserProfile? Get(string key)
     {
         Interlocked.Increment(ref _getCount);
 
         _lock.EnterReadLock();
         try
         {
-            return _store.GetValueOrDefault(key.ToString());
+            var bytes = _store.GetValueOrDefault(key);
+            if (bytes is null)
+                return null;
+
+            return JsonSerializer.Deserialize<UserProfile>(bytes);
         }
         finally
         {
