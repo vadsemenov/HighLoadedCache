@@ -35,8 +35,6 @@ public class SimpleStore : ISimpleStore, IDisposable
         try
         {
             var bytes = _store.GetValueOrDefault(key);
-            if (bytes is null)
-                return null;
 
             return JsonSerializer.Deserialize<UserProfile>(bytes);
         }
