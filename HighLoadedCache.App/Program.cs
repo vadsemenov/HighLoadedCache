@@ -5,6 +5,9 @@ using HighLoadedCache.Services.Store;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -13,7 +16,25 @@ IConfiguration configuration = new ConfigurationBuilder()
     .AddJsonFile("appsettings.json", optional: false, reloadOnChange: true)
     .Build();
 
-// Настройка DI-контейнера
+var resourceBuilder = ResourceBuilder.CreateDefault()
+    .AddService(DiagnosticsConfig.ServiceName);
+
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing =>
+    {
+        tracing
+            .SetResourceBuilder(resourceBuilder)
+            .AddSource(DiagnosticsConfig.ActivitySource.Name)
+            .AddConsoleExporter();
+    })
+    .WithMetrics(metrics =>
+    {
+        metrics
+            .SetResourceBuilder(resourceBuilder)
+            .AddMeter(DiagnosticsConfig.Meter.Name)
+            .AddConsoleExporter();
+    });
+
 builder.Services.AddOptions<TcpSettings>().Bind(configuration.GetSection("TcpSettings"));
 
 builder.Services.AddSingleton<ISimpleStore, SimpleStore>();

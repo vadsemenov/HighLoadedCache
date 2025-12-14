@@ -17,8 +17,12 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
 {
     private Socket? _socket;
 
+    private const int MaxMessageSize = 4096;
+
     private readonly string _ipAddress = tcpSettings.Value.IpAddress;
     private readonly int _port = tcpSettings.Value.Port;
+
+    private readonly SemaphoreSlim _connectionsSemaphore = new(tcpSettings.Value.MaxConnections);
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -38,6 +42,8 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
                 {
                     try
                     {
+                        await _connectionsSemaphore.WaitAsync(cancellationToken);
+
                         using Socket clientSocket = await _socket.AcceptAsync(cancellationToken);
                         Console.WriteLine("Создано новое подключение с клиентом.");
 
@@ -53,6 +59,7 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
                     }
                     finally
                     {
+                        _connectionsSemaphore.Release();
                         Console.WriteLine("Клиент отключен.");
                     }
                 }, cancellationToken);
@@ -85,55 +92,96 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
 
     private async Task ReceiveDataAsync(Socket clientSocket, CancellationToken cancellationToken)
     {
-        var buffer = ArrayPool<byte>.Shared.Rent(200);
+        var buffer = ArrayPool<byte>.Shared.Rent(MaxMessageSize);
+        var accumulatedBytes = 0;
 
         try
         {
             while (clientSocket.Connected)
             {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
+                if (cancellationToken.IsCancellationRequested) return;
 
-                var byteCount = await clientSocket.ReceiveAsync(buffer, SocketFlags.None);
-
-                if (byteCount == 0)
+                if (accumulatedBytes >= MaxMessageSize)
                 {
+                    Console.WriteLine($"Клиент превысил лимит сообщения ({MaxMessageSize} байт). Разрыв соединения.");
                     break;
                 }
 
-                var receivedText = Encoding.UTF8.GetString(buffer, 0, byteCount);
+                var bytesRead = await clientSocket.ReceiveAsync(
+                    new Memory<byte>(buffer, accumulatedBytes, MaxMessageSize - accumulatedBytes),
+                    SocketFlags.None, cancellationToken);
 
-                PrintCommandsToConsole(CommandParser.Parse(receivedText.AsSpan()));
+                if (bytesRead == 0) break;
 
-                var commandParts = CommandParser.Parse(receivedText.AsSpan());
+                accumulatedBytes += bytesRead;
 
-                var response = "OK\r\n";
+                int delimiterIndex = Array.IndexOf(buffer, (byte)'\n', 0, accumulatedBytes);
 
-                switch (commandParts.Command)
+                if (delimiterIndex >= 0)
                 {
-                    case "SET":
-                        simpleStore.Set(commandParts.Key.ToString(), JsonSerializer.Deserialize<UserProfile>(commandParts.Value)!);
-                        break;
-                    case "GET":
-                        var userProfile = TryGetStoreValue(commandParts.Key.ToString());
-                        response = userProfile != null ? JsonSerializer.Serialize(userProfile) : "(nil)\r\n";
-                        break;
-                    case "DEL":
-                        simpleStore.Delete(commandParts.Key);
-                        break;
-                    case "STA":
-                        var statistics = simpleStore.GetStatistics();
-                        response = $"Statistics, set count: {statistics.setCount}, get count: {statistics.getCount}, delete count: {statistics.deleteCount}\r\n";
-                        break;
-                    default:
-                        response = "ERROR\r\n";
-                        break;
-                }
+                    var messageSpan = new ReadOnlySpan<byte>(buffer, 0, delimiterIndex);
+                    var receivedText = Encoding.UTF8.GetString(messageSpan);
 
-                await clientSocket.SendAsync(Encoding.UTF8.GetBytes(response), SocketFlags.None);
+                    var response = ProcessCommandAsync(clientSocket, receivedText);
+
+                    await clientSocket.SendAsync(Encoding.UTF8.GetBytes(response), SocketFlags.None);
+
+                    accumulatedBytes = 0;
+                }
+                else
+                {
+                    if (accumulatedBytes < MaxMessageSize) continue;
+
+                    Console.WriteLine($"Получена команда без завершающего символа длиной {accumulatedBytes} байт. Разрыв соединения.");
+                    break;
+                }
             }
+
+            // while (clientSocket.Connected)
+            // {
+            //     if (cancellationToken.IsCancellationRequested)
+            //     {
+            //         return;
+            //     }
+            //
+            //     var byteCount = await clientSocket.ReceiveAsync(buffer, SocketFlags.None);
+            //
+            //     if (byteCount == 0)
+            //     {
+            //         break;
+            //     }
+            //
+            //     var receivedText = Encoding.UTF8.GetString(buffer, 0, byteCount);
+            //
+            //     PrintCommandsToConsole(CommandParser.Parse(receivedText.AsSpan()));
+            //
+            //     var commandParts = CommandParser.Parse(receivedText.AsSpan());
+            //
+            //     var response = "OK\r\n";
+            //
+            //     switch (commandParts.Command)
+            //     {
+            //         case "SET":
+            //             simpleStore.Set(commandParts.Key.ToString(), JsonSerializer.Deserialize<UserProfile>(commandParts.Value)!);
+            //             break;
+            //         case "GET":
+            //             var userProfile = TryGetStoreValue(commandParts.Key.ToString());
+            //             response = userProfile != null ? JsonSerializer.Serialize(userProfile) : "(nil)\r\n";
+            //             break;
+            //         case "DEL":
+            //             simpleStore.Delete(commandParts.Key);
+            //             break;
+            //         case "STA":
+            //             var statistics = simpleStore.GetStatistics();
+            //             response = $"Statistics, set count: {statistics.setCount}, get count: {statistics.getCount}, delete count: {statistics.deleteCount}\r\n";
+            //             break;
+            //         default:
+            //             response = "ERROR\r\n";
+            //             break;
+            //     }
+            //
+            //     await clientSocket.SendAsync(Encoding.UTF8.GetBytes(response), SocketFlags.None);
+            // }
         }
         catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
         {
@@ -147,6 +195,36 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    private string ProcessCommandAsync(Socket clientSocket, string receivedText)
+    {
+        PrintCommandsToConsole(CommandParser.Parse(receivedText.AsSpan()));
+        var commandParts = CommandParser.Parse(receivedText.AsSpan());
+        var response = "OK\r\n";
+
+        switch (commandParts.Command)
+        {
+            case "SET":
+                simpleStore.Set(commandParts.Key.ToString(), JsonSerializer.Deserialize<UserProfile>(commandParts.Value)!);
+                break;
+            case "GET":
+                var userProfile = TryGetStoreValue(commandParts.Key.ToString());
+                response = userProfile != null ? JsonSerializer.Serialize(userProfile) : "(nil)\r\n";
+                break;
+            case "DEL":
+                simpleStore.Delete(commandParts.Key);
+                break;
+            case "STA":
+                var statistics = simpleStore.GetStatistics();
+                response = $"Statistics, set count: {statistics.setCount}, get count: {statistics.getCount}, delete count: {statistics.deleteCount}\r\n";
+                break;
+            default:
+                response = "ERROR\r\n";
+                break;
+        }
+
+        return response;
     }
 
     private UserProfile? TryGetStoreValue(string commandPartsKey)
