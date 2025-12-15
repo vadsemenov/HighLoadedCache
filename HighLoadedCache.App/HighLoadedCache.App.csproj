@@ -11,6 +11,8 @@
     <ProjectReference Include="..\HighLoadedCache.Domain\HighLoadedCache.Domain.csproj" />
     <ProjectReference Include="..\HighLoadedCache.Infrastructure\HighLoadedCache.Infrastructure.csproj" />
     <ProjectReference Include="..\HighLoadedCache.Services\HighLoadedCache.Services.csproj" />
+    <ProjectReference Include="..\HighLoadedCache.Generators\HighLoadedCache.Generators.csproj" OutputItemType="Analyzer"
+                      ReferenceOutputAssembly="false"/>
   </ItemGroup>
 
   <ItemGroup>

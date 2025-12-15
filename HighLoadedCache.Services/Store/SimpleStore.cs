@@ -19,7 +19,11 @@ public class SimpleStore : ISimpleStore, IDisposable
         _lock.EnterWriteLock();
         try
         {
-            _store[key] = JsonSerializer.SerializeToUtf8Bytes(userProfile);
+            using var stream = new MemoryStream();
+
+            userProfile.SerializeToBinary(stream);
+
+            _store[key] = stream.ToArray();
         }
         finally
         {
