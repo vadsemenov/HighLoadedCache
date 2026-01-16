@@ -26,7 +26,7 @@ public class SimpleTcpClient(string? host = null, int? port = null) : IAsyncDisp
 
         try
         {
-            var text = string.Concat("SET ", key, " ", value);
+            var text = string.Concat("SET ", key, " ", value, '\n');
             var count = Encoding.UTF8.GetBytes(text.AsSpan(), rented);
 
             if (_stream == null)

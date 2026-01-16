@@ -1,9 +1,10 @@
 ﻿using System.Buffers;
+using System.Diagnostics;
+using System.Diagnostics.Metrics;
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using HighLoadedCache.Domain;
 using HighLoadedCache.Domain.Dto;
 using HighLoadedCache.Services.Abstraction;
@@ -17,11 +18,35 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
 {
     private Socket? _socket;
 
+    private const int MaxMessageSize = 4096;
+
     private readonly string _ipAddress = tcpSettings.Value.IpAddress;
     private readonly int _port = tcpSettings.Value.Port;
 
-    public Task StartAsync(CancellationToken cancellationToken)
+    private readonly SemaphoreSlim _connectionsSemaphore = new(tcpSettings.Value.MaxConnections);
+
+    private readonly Counter<long> _connectionsCounter =
+        DiagnosticsConfig.Meter.CreateCounter<long>("tcp.connections.total", "count", "Total accepted connections");
+
+    private readonly UpDownCounter<long> _activeConnectionsCounter =
+        DiagnosticsConfig.Meter.CreateUpDownCounter<long>("tcp.connections.active", "count", "Current active connections");
+
+    private readonly Counter<long> _bytesReceivedCounter =
+        DiagnosticsConfig.Meter.CreateCounter<long>("tcp.bytes_received", "bytes", "Total bytes received");
+
+    private readonly Counter<long> _processedCommandsCounter = DiagnosticsConfig.Meter.CreateCounter<long>(
+        "tcp.commands.processed.total",
+        "count",
+        "Total processed commands");
+    private readonly Histogram<double> _commandProcessingTimeHistogram = DiagnosticsConfig.Meter.CreateHistogram<double>(
+        "tcp.commands.duration",
+        "ms",
+        "Command processing duration");
+
+    public async Task StartAsync(CancellationToken cancellationToken)
     {
+        using var serverActivity = DiagnosticsConfig.ActivitySource.StartActivity(nameof(TcpServer)) ?? new Activity(nameof(TcpServer)).Start();
+
         try
         {
             _socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -31,31 +56,59 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
             _socket.Listen(100);
 
             Console.WriteLine("Сервер запущен. Ожидание подключений...");
+            serverActivity.SetTag("server.port", _port.ToString());
+            serverActivity.SetStatus(ActivityStatusCode.Ok);
 
             while (!cancellationToken.IsCancellationRequested)
             {
-                _ = Task.Run(async () =>
+                try
                 {
-                    try
-                    {
-                        using Socket clientSocket = await _socket.AcceptAsync(cancellationToken);
-                        Console.WriteLine("Создано новое подключение с клиентом.");
+                    await _connectionsSemaphore.WaitAsync(cancellationToken);
 
-                        await ProcessAsync(clientSocket, cancellationToken);
-                    }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    Socket clientSocket = await _socket.AcceptAsync(cancellationToken);
+                    Console.WriteLine("Создано новое подключение с клиентом.");
+
+                    _connectionsCounter.Add(1);
+                    _activeConnectionsCounter.Add(1);
+
+                    _ = Task.Run(async () =>
                     {
-                        Console.WriteLine("Подключение отменено.");
-                    }
-                    catch (Exception exception)
-                    {
-                        Console.WriteLine($"Ошибка при принятии подключения: {exception}");
-                    }
-                    finally
-                    {
-                        Console.WriteLine("Клиент отключен.");
-                    }
-                }, cancellationToken);
+                        using var activity = DiagnosticsConfig.ActivitySource.StartActivity("ClientSession") ?? new Activity("ClientSession").Start();
+
+                        try
+                        {
+                            if (clientSocket.RemoteEndPoint is IPEndPoint ep)
+                            {
+                                activity?.AddTag("client.ip", ep.Address.ToString());
+                            }
+
+                            await ProcessAsync(clientSocket, cancellationToken);
+                        }
+                        catch (OperationCanceledException ex) when (cancellationToken.IsCancellationRequested)
+                        {
+                            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                            Console.WriteLine("Подключение отменено.");
+                        }
+                        catch (Exception ex)
+                        {
+                            activity?.SetStatus(ActivityStatusCode.Error, ex.Message);
+                            Console.WriteLine("Ошибка подключения.");
+                        }
+                        finally
+                        {
+                            clientSocket.Dispose();
+                            _connectionsSemaphore.Release();
+
+                            _activeConnectionsCounter.Add(-1);
+
+                            Console.WriteLine("Клиент отключен.");
+                        }
+                    }, cancellationToken);
+                }
+                catch (Exception exception)
+                {
+                    Console.WriteLine($"Ошибка при принятии подключения: {exception}");
+                }
             }
         }
         catch (Exception exception)
@@ -63,8 +116,6 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
             Console.WriteLine(exception);
             throw;
         }
-
-        return Task.CompletedTask;
     }
 
     private async Task ProcessAsync(Socket clientSocket, CancellationToken cancellationToken)
@@ -85,54 +136,50 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
 
     private async Task ReceiveDataAsync(Socket clientSocket, CancellationToken cancellationToken)
     {
-        var buffer = ArrayPool<byte>.Shared.Rent(200);
+        var buffer = ArrayPool<byte>.Shared.Rent(MaxMessageSize);
+        var accumulatedBytes = 0;
 
         try
         {
             while (clientSocket.Connected)
             {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return;
-                }
+                if (cancellationToken.IsCancellationRequested) return;
 
-                var byteCount = await clientSocket.ReceiveAsync(buffer, SocketFlags.None);
-
-                if (byteCount == 0)
+                if (accumulatedBytes >= MaxMessageSize)
                 {
+                    Console.WriteLine($"Клиент превысил лимит сообщения ({MaxMessageSize} байт). Разрыв соединения.");
                     break;
                 }
 
-                var receivedText = Encoding.UTF8.GetString(buffer, 0, byteCount);
+                var bytesRead = await clientSocket.ReceiveAsync(
+                    new Memory<byte>(buffer, accumulatedBytes, MaxMessageSize - accumulatedBytes),
+                    SocketFlags.None, cancellationToken);
 
-                PrintCommandsToConsole(CommandParser.Parse(receivedText.AsSpan()));
+                if (bytesRead == 0) break;
 
-                var commandParts = CommandParser.Parse(receivedText.AsSpan());
+                accumulatedBytes += bytesRead;
+                _bytesReceivedCounter.Add(bytesRead);
 
-                var response = "OK\r\n";
+                int delimiterIndex = Array.IndexOf(buffer, (byte)'\n', 0, accumulatedBytes);
 
-                switch (commandParts.Command)
+                if (delimiterIndex >= 0)
                 {
-                    case "SET":
-                        simpleStore.Set(commandParts.Key.ToString(), JsonSerializer.Deserialize<UserProfile>(commandParts.Value)!);
-                        break;
-                    case "GET":
-                        var userProfile = TryGetStoreValue(commandParts.Key.ToString());
-                        response = userProfile != null ? JsonSerializer.Serialize(userProfile) : "(nil)\r\n";
-                        break;
-                    case "DEL":
-                        simpleStore.Delete(commandParts.Key);
-                        break;
-                    case "STA":
-                        var statistics = simpleStore.GetStatistics();
-                        response = $"Statistics, set count: {statistics.setCount}, get count: {statistics.getCount}, delete count: {statistics.deleteCount}\r\n";
-                        break;
-                    default:
-                        response = "ERROR\r\n";
-                        break;
-                }
+                    var messageSpan = new ReadOnlySpan<byte>(buffer, 0, delimiterIndex);
+                    var receivedText = Encoding.UTF8.GetString(messageSpan);
 
-                await clientSocket.SendAsync(Encoding.UTF8.GetBytes(response), SocketFlags.None);
+                    var response = ProcessCommandAsync(receivedText);
+
+                    await clientSocket.SendAsync(Encoding.UTF8.GetBytes(response), SocketFlags.None);
+
+                    accumulatedBytes = 0;
+                }
+                else
+                {
+                    if (accumulatedBytes < MaxMessageSize) continue;
+
+                    Console.WriteLine($"Получена команда без завершающего символа длиной {accumulatedBytes} байт. Разрыв соединения.");
+                    break;
+                }
             }
         }
         catch (SocketException ex) when (ex.SocketErrorCode == SocketError.ConnectionReset)
@@ -147,6 +194,49 @@ public class TcpServer(ISimpleStore simpleStore, IOptions<TcpSettings> tcpSettin
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
+    }
+
+    private string ProcessCommandAsync(string receivedText)
+    {
+        var stopwatch = Stopwatch.StartNew();
+
+        using var activity = DiagnosticsConfig.ActivitySource.StartActivity("ProcessCommand");
+
+        PrintCommandsToConsole(CommandParser.Parse(receivedText.AsSpan()));
+        var commandParts = CommandParser.Parse(receivedText.AsSpan());
+        var response = "OK\r\n";
+
+        activity?.AddTag("command.type", commandParts.Command.ToString());
+        activity?.AddTag("command.key", commandParts.Key.ToString());
+
+        switch (commandParts.Command)
+        {
+            case "SET":
+                simpleStore.Set(commandParts.Key.ToString(), JsonSerializer.Deserialize<UserProfile>(commandParts.Value)!);
+                break;
+            case "GET":
+                var userProfile = TryGetStoreValue(commandParts.Key.ToString());
+                response = userProfile != null ? JsonSerializer.Serialize(userProfile) : "(nil)\r\n";
+                break;
+            case "DEL":
+                simpleStore.Delete(commandParts.Key);
+                break;
+            case "STA":
+                var statistics = simpleStore.GetStatistics();
+                response = $"Statistics, set count: {statistics.setCount}, get count: {statistics.getCount}, delete count: {statistics.deleteCount}\r\n";
+                break;
+            default:
+                response = "ERROR\r\n";
+                break;
+        }
+
+        stopwatch.Stop();
+        var durationMs = stopwatch.Elapsed.TotalMilliseconds;
+
+        _processedCommandsCounter.Add(1, new KeyValuePair<string, object?>("command.name", commandParts.Command.ToString()));
+        _commandProcessingTimeHistogram.Record(durationMs, new KeyValuePair<string, object?>("command.name", commandParts.Command.ToString()));
+
+        return response;
     }
 
     private UserProfile? TryGetStoreValue(string commandPartsKey)
