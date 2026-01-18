@@ -1,7 +1,7 @@
-using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using HighLoadedCache.Domain.Dto;
+using NBomber;
 using NBomber.Contracts;
 using NBomber.CSharp;
 
@@ -9,63 +9,63 @@ namespace HighLoadedCache.SocketTestClient;
 
 public static class NBomberScenarios
 {
-    private static readonly RandomNumberGenerator NumberGenerator = RandomNumberGenerator.Create();
-    private static string RandomKey(int len) => RandomFromAlphabet(len, "abcdefghijklmnopqrstuvwxyz0123456789");
-    private static string RandomString(int len) => RandomFromAlphabet(len, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+    // Пул клиентов и пул данных
+    private static readonly ClientPool<SimpleTcpClient> ClientPool = new();
+    private static readonly List<byte[]> PayloadPool = new();
+    private const int PoolSize = 10000;
+    // Пул из 100 соединений для 500 000 RPS
+    private const int MaxConnections = 100;
+
+    static NBomberScenarios()
+    {
+        for (int i = 0; i < PoolSize; i++)
+        {
+            var payload = $"SET k_{i} {JsonSerializer.Serialize(new UserProfile { Id = i, Username = "User" })}\n";
+            PayloadPool.Add(Encoding.UTF8.GetBytes(payload));
+        }
+    }
 
     public static ScenarioProps CreateScenario(string host = "127.0.0.1", int port = 8081)
     {
-        var scenario = Scenario.Create("tcp_set_scenario", async scenarioContext =>
+        return Scenario.Create("tcp_set_scenario", async context =>
             {
+                // Получаем клиента из пула по номеру инстанса (автоматический Round-Robin)
+                var client = ClientPool.GetClient(context.ScenarioInfo.InstanceNumber);
+                var payload = PayloadPool[(int)(context.InvocationNumber % PoolSize)];
+
                 try
                 {
-                    var step = await Step.Run("tcp_set_random", scenarioContext, async () =>
-                    {
-                        try
-                        {
-                            await using var client = new SimpleTcpClient(host, port);
-                            await client.ConnectAsync();
-
-                            var key = $"k_{scenarioContext.ScenarioInfo.InstanceId}_{scenarioContext.InvocationNumber}_{RandomKey(8)}";
-                            var value = JsonSerializer.Serialize(new UserProfile { Id = 0, Username = "User", CreatedAt = DateTime.Now });
-
-                            await client.SetAsync(key, value);
-                        }
-                        catch (Exception exception)
-                        {
-                            scenarioContext.Logger.Error(exception, "tcp_set_random failed");
-                            return Response.Fail();
-                        }
-
-                        return Response.Ok();
-                    });
-
-                    return step;
+                    await client.SendAsync(payload);
+                    return Response.Ok();
                 }
-                catch (Exception exception)
+                catch (Exception ex)
                 {
-                    scenarioContext.Logger.Error(exception, "tcp_set failed");
+                    context.Logger.Error(ex, "Send failed");
                     return Response.Fail();
                 }
             })
-            .WithWarmUpDuration(TimeSpan.FromSeconds(5)) // разогрев 5–10 сек
+            .WithInit(async context =>
+            {
+                // Инициализируем пул соединений перед тестом
+                for (int i = 0; i < MaxConnections; i++)
+                {
+                    var client = new SimpleTcpClient(host, port);
+                    await client.ConnectAsync();
+                    // Добавляем в пул NBomber
+                    ClientPool.AddClient(client);
+                }
+            })
+            .WithClean(async context =>
+            {
+                // Закрываем все соединения после теста
+                ClientPool.DisposeClients();
+            })
+            .WithWarmUpDuration(TimeSpan.FromSeconds(5))
             .WithLoadSimulations(
                 Simulation.Inject(
-                    rate: 100, // 100 запросов/сек
-                    interval: TimeSpan.FromSeconds(1), // шаг инъекции
-                    during: TimeSpan.FromSeconds(30) // длительность плато
-                )
+                    rate: 500_000,
+                    interval: TimeSpan.FromSeconds(1),
+                    during: TimeSpan.FromSeconds(30))
             );
-
-        return scenario;
-    }
-
-    private static string RandomFromAlphabet(int len, string alphabet)
-    {
-        Span<byte> bytes = stackalloc byte[len];
-        NumberGenerator.GetBytes(bytes);
-        var sb = new StringBuilder(len);
-        for (int i = 0; i < len; i++) sb.Append(alphabet[bytes[i] % alphabet.Length]);
-        return sb.ToString();
     }
 }

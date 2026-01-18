@@ -6,5 +6,5 @@ public class TcpSettings
 
     public int Port { get; set; }
 
-    public short MaxConnections { get; set; } = 10;
+    public short MaxConnections { get; set; } = 200;
 }
